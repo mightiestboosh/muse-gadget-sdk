@@ -13,7 +13,11 @@
 # limitations under the License.
 
 dependencies:
-  espressif/esp_websocket_client: "~1.2"
+  espressif/esp_websocket_client:
+    # Pinned official source: PSRAM task stack support is not in registry 1.8.
+    git: https://github.com/espressif/esp-protocols.git
+    path: components/esp_websocket_client
+    version: 5c4650d0ab6f9fde165ae1e3c1ef16714be0a619
   espressif/cjson: "~1.7"
   espressif/led_strip: "~3.0"
   idf:
