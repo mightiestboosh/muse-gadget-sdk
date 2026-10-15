@@ -174,6 +174,18 @@ stay lit. The IMU, IR and Grove port aren't used yet.
 [M5Unified](https://github.com/m5stack/M5Unified) is M5Stack's reference
 driver for the power chip and peripherals.
 
+On the `sticks3-voice-keyboard` branch, front press starts recording at once:
+release after 400 ms sends; a shorter tap keeps recording until the next
+press. Side cancels and 60 seconds auto-sends. Spoken replies use an
+ElevenLabs key stored in encrypted NVS. The side menu's Keyboard switch
+persists across reboots and sends committed dictation to an iPhone or Mac
+as a US-layout BLE keyboard. Phone setup takes priority over HID advertising.
+See [Keyboard and speech setup](../docs/KEYBOARD.md) for credential setup,
+HMAC key-slot checks, host pairing, the BLE ownership audit, and measurement
+instructions. Hardware latency and battery cost are **pending measurement**;
+this branch has only been built and host-tested. Build with
+`tools/muse/board.sh build sticks3`.
+
 M5Stack ships the StickS3 with UiFlow2, which hands the ESP32-S3's USB to its
 own driver and switches off the chip's USB serial port, so esptool can't find
 it. The power chip drives the boot pin (GPIO0), so there's no BOOT button
