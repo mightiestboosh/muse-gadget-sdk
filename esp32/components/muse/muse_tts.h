@@ -74,6 +74,10 @@ size_t muse_tts_pump(uint8_t *dst, size_t room);
 /* Drops the current job without waiting: its task notices and exits. */
 void muse_tts_cancel(void);
 
+/* Best-effort HEAD on the same HTTP client to cache its TLS ticket. No
+ * synthesis request and no charge. Returns at once; idle worker owns it. */
+void muse_tts_prewarm(void);
+
 #ifdef __cplusplus
 }
 #endif

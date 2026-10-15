@@ -71,6 +71,7 @@ extern "C" {
 #include "muse_settings.h"
 #include "muse_text.h"
 #include "muse_tts.h"
+#include "muse_latency.h"
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
@@ -286,6 +287,9 @@ static int64_t now_us(void)
 
 static void mark(mark_t m)
 {
+#if CONFIG_MUSE_LATENCY
+    if (m == M_TEXT) muse_latency_mark(muse_latency_turn(), MUSE_LAT_TEXT);
+#endif
     if (!s_marks[m]) {
         s_marks[m] = now_us();
     }
@@ -1569,7 +1573,7 @@ static void start_tts(void)
         if (m.tts == TTS_NONE) {
             /* Still arriving: start once a sentence is in, keeping order. */
             const char *text = speak && !s_turn.tts_no_early ? s_turn.texts + i * TEXT_MAX : nullptr;
-            if (text && muse_text_sentence_end(text, strlen(text), TTS_SENTENCE_MIN)) {
+            if (text && muse_text_sentence_end(text, strlen(text), 0)) {
                 esp_err_t err = begin_speech(i);
                 if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
                     ESP_LOGW(TAG, "can't speak message %s yet (%s)", m.id, esp_err_to_name(err));
@@ -1664,7 +1668,8 @@ static void feed_tts(void)
     const char *text = s_turn.texts + s_turn.tts_msg * TEXT_MAX;
     size_t len = strlen(text);
     size_t n;
-    while ((n = muse_text_sentence_end(text + s_turn.tts_said, len - s_turn.tts_said, TTS_SENTENCE_MIN))) {
+    while ((n = muse_text_sentence_end(text + s_turn.tts_said, len - s_turn.tts_said,
+                                      s_turn.tts_said ? TTS_SENTENCE_MIN : 0))) {
         if (muse_tts_say(text + s_turn.tts_said, n) != ESP_OK) {
             return;   /* queue full: next time round */
         }
@@ -2262,6 +2267,7 @@ extern "C" void muse_hatch_turn_end(void)
 
 extern "C" void muse_hatch_turn_cancel(void)
 {
+    muse_tts_cancel();   /* invalidate the network job before the session can run */
     uint32_t gen = s_gen.load();
     ++s_gen;
     post(CMD_CANCEL, gen);

@@ -52,6 +52,7 @@
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "muse_settings.h"
+#include "muse_latency.h"
 
 static const char *TAG = "muse_tts";
 
@@ -79,6 +80,9 @@ static atomic_bool s_waiting;          /* the task is waiting for text */
 static atomic_uint s_job;
 static atomic_int s_state = MUSE_TTS_IDLE;
 static atomic_size_t s_received;
+/* s_busy transfers exclusive ownership between the warm task and TTS task. */
+static esp_http_client_handle_t s_cached;
+static uint32_t s_turn;
 
 bool muse_tts_configured(void)
 {
@@ -152,6 +156,9 @@ static int send_request(esp_http_client_handle_t c, unsigned job, const char *bo
 static bool speak(esp_http_client_handle_t c, unsigned job, const char *text, const char *prev,
                   uint8_t *buf, size_t *total)
 {
+    size_t internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "request: internal heap %u", (unsigned)internal);
+    if (internal < TTS_INTERNAL_FLOOR) return false;
     int64_t start = esp_timer_get_time(), deadline = start + TTS_DEADLINE_US;
     size_t before = *total;
     bool ok = false;
@@ -165,6 +172,7 @@ static bool speak(esp_http_client_handle_t c, unsigned job, const char *text, co
             if (n > 0) {
                 if (!first_us) {
                     first_us = esp_timer_get_time();
+                    if (!cancelled(job)) muse_latency_at(s_turn, MUSE_LAT_TTS_BYTE, first_us);
                 }
                 *total += (size_t)n;
                 atomic_store(&s_received, *total);
@@ -180,10 +188,9 @@ static bool speak(esp_http_client_handle_t c, unsigned job, const char *text, co
             }
         }
     } else if (status > 0) {
-        /* ElevenLabs says why in JSON: {"detail":{"status":"invalid_api_key",...}} */
-        esp_http_client_set_timeout_ms(c, TTS_READ_MS);
-        int n = esp_http_client_read(c, (char *)buf, 255);
-        ESP_LOGW(TAG, "HTTP %d %.*s", status, n > 0 ? n : 0, (const char *)buf);
+        /* Never log remote response bodies: an upstream/proxy error could
+         * contain credentials or dictated text. */
+        ESP_LOGW(TAG, "HTTP %d", status);
     }
     esp_http_client_close(c);
     cJSON_free(body);
@@ -195,7 +202,7 @@ static bool speak(esp_http_client_handle_t c, unsigned job, const char *text, co
 
 /* The next request's text: the oldest sentence and every one queued behind it,
  * up to TTS_BATCH_MAX. NULL when the job ends; *last when that came with it. */
-static char *next_text(unsigned job, bool *last)
+static char *next_text(unsigned job, bool *last, bool batch)
 {
     char *item = NULL;
     *last = false;
@@ -217,7 +224,7 @@ static char *next_text(unsigned job, bool *last)
     }
     size_t len = strlen(item);
     char *next;
-    while (len < TTS_BATCH_MAX && xQueuePeek(s_q, &next, 0) == pdTRUE) {
+    while (batch && len < TTS_BATCH_MAX && xQueuePeek(s_q, &next, 0) == pdTRUE) {
         if (!next) {
             xQueueReceive(s_q, &next, 0);
             *last = true;
@@ -240,6 +247,52 @@ static char *next_text(unsigned job, bool *last)
     return item;
 }
 
+static esp_http_client_handle_t client(void)
+{
+    esp_http_client_handle_t c = s_cached;
+    s_cached = NULL;
+    if (!c) {
+        const esp_http_client_config_t cfg = {
+            .url = "https://api.elevenlabs.io/",
+            .timeout_ms = TTS_CONNECT_MS,
+            .buffer_size = TTS_READ_BYTES,
+            .buffer_size_tx = 1024,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .disable_auto_redirect = true,
+#if CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS
+            .save_client_session = true,
+#endif
+        };
+        c = esp_http_client_init(&cfg);
+    }
+    return c;
+}
+
+static void warm_task(void *arg)
+{
+    (void)arg;
+    esp_http_client_handle_t c = client();
+    if (c) {
+        esp_http_client_set_url(c, "https://api.elevenlabs.io/");
+        esp_http_client_set_method(c, HTTP_METHOD_HEAD);
+        esp_http_client_set_timeout_ms(c, 1500);
+        if (esp_http_client_open(c, 0) == ESP_OK) esp_http_client_fetch_headers(c);
+        esp_http_client_close(c);
+        s_cached = c;
+    }
+    atomic_store(&s_busy, false);
+    vTaskDeleteWithCaps(NULL);
+}
+
+void muse_tts_prewarm(void)
+{
+    if (!muse_tts_configured() || heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < TTS_INTERNAL_FLOOR) return;
+    bool idle = false;
+    if (!atomic_compare_exchange_strong(&s_busy, &idle, true)) return;
+    if (xTaskCreatePinnedToCoreWithCaps(warm_task, "tts_warm", TTS_STACK, NULL, TTS_PRIORITY,
+            NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) atomic_store(&s_busy, false);
+}
+
 static void tts_task(void *arg)
 {
     unsigned job = (unsigned)(uintptr_t)arg;
@@ -255,20 +308,10 @@ static void tts_task(void *arg)
 
     uint8_t *buf = heap_caps_malloc(TTS_READ_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     char *prev = heap_caps_calloc(1, TTS_PREV_MAX + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = TTS_CONNECT_MS,
-        .buffer_size = TTS_READ_BYTES,
-        .buffer_size_tx = 1024,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .disable_auto_redirect = true,
-#if CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS
-        .save_client_session = true,
-#endif
-    };
-    esp_http_client_handle_t c = buf && prev ? esp_http_client_init(&cfg) : NULL;
+    esp_http_client_handle_t c = buf && prev ? client() : NULL;
     if (c) {
+        esp_http_client_set_url(c, url);
+        esp_http_client_set_method(c, HTTP_METHOD_POST);
         esp_http_client_set_header(c, "xi-api-key", key);
         esp_http_client_set_header(c, "Content-Type", "application/json");
         esp_http_client_set_header(c, "Accept", "audio/mpeg");
@@ -277,7 +320,7 @@ static void tts_task(void *arg)
 
     while (c) {
         bool last;
-        char *text = next_text(job, &last);
+        char *text = next_text(job, &last, requests > 0);
         if (text) {
             requests++;
             bool ok = speak(c, job, text, prev, buf, &total);
@@ -298,7 +341,9 @@ static void tts_task(void *arg)
     }
 
     if (c) {
-        esp_http_client_cleanup(c);
+        esp_http_client_close(c);
+        esp_http_client_delete_header(c, "xi-api-key");
+        s_cached = c;
     }
     heap_caps_free(buf);
     heap_caps_free(prev);
@@ -351,6 +396,7 @@ esp_err_t muse_tts_start(void)
     atomic_store(&s_received, 0);
     atomic_store(&s_waiting, false);
     atomic_store(&s_state, MUSE_TTS_RUNNING);
+    s_turn = muse_latency_turn();
 
     if (xTaskCreatePinnedToCoreWithCaps(tts_task, "muse_tts", TTS_STACK, (void *)(uintptr_t)job, TTS_PRIORITY,
                                         NULL, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
