@@ -3,6 +3,7 @@
  * see docs/KEYBOARD.md before changing the Muse coexistence hooks. */
 #include "muse_hid_kbd.h"
 #include <stdatomic.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_heap_caps.h"
@@ -30,6 +31,7 @@ static const char *TAG = "muse_kbd";
 #define NO_CONN BLE_HS_CONN_HANDLE_NONE
 static atomic_bool s_enabled, s_adv, s_secure, s_subscribed;
 static atomic_uint s_conn = NO_CONN, s_cancel;
+static atomic_int s_tx_status;
 static uint16_t s_input, s_boot_input;
 static uint8_t s_leds, s_protocol = 1, s_suspend;
 static SemaphoreHandle_t s_credit, s_lock;
@@ -179,7 +181,9 @@ static int gap(struct ble_gap_event *e, void *arg)
         } else muse_link_ble_apply();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
-        atomic_store(&s_conn,NO_CONN); atomic_store(&s_secure,false); atomic_store(&s_subscribed,false);
+        if (atomic_load(&s_conn)==e->disconnect.conn.conn_handle) {
+            atomic_store(&s_conn,NO_CONN); atomic_store(&s_secure,false); atomic_store(&s_subscribed,false);
+        }
         muse_hid_kbd_cancel(); muse_stt_cancel();
         s_directed_tried=false;
         muse_link_ble_apply();
@@ -204,7 +208,11 @@ static int gap(struct ble_gap_event *e, void *arg)
         if (e->subscribe.attr_handle==(s_protocol ? s_input : s_boot_input)) atomic_store(&s_subscribed,e->subscribe.cur_notify);
         break;
     case BLE_GAP_EVENT_NOTIFY_TX:
-        if (e->notify_tx.attr_handle==s_input || e->notify_tx.attr_handle==s_boot_input) xSemaphoreGive(s_credit);
+        if (e->notify_tx.conn_handle==atomic_load(&s_conn) &&
+            (e->notify_tx.attr_handle==s_input || e->notify_tx.attr_handle==s_boot_input)) {
+            atomic_store(&s_tx_status,e->notify_tx.status);
+            xSemaphoreGive(s_credit);
+        }
         break;
     case BLE_GAP_EVENT_REPEAT_PAIRING: {
         struct ble_gap_conn_desc d;
@@ -259,14 +267,22 @@ static bool ready(uint16_t conn)
 static bool report(const typing_t *t, const uint8_t r[8], bool release)
 {
     while (ready(t->conn) && (release || t->cancel==atomic_load(&s_cancel))) {
+        xSemaphoreTake(s_credit,0); /* drain a prior report's completion */
+        atomic_store(&s_tx_status,INT_MIN);
         struct os_mbuf *om=ble_hs_mbuf_from_flat(r,8);
         int rc=om ? ble_gatts_notify_custom(t->conn,s_protocol ? s_input : s_boot_input,om) : BLE_HS_ENOMEM;
         if (!rc) {
-            /* Notify TX is the credit; a successful enqueue owns the mbuf.
-             * Wait for progress, then allow at least 10 ms before next edge. */
-            xSemaphoreTake(s_credit,pdMS_TO_TICKS(100));
-            vTaskDelay(pdMS_TO_TICKS(10));
-            return true;
+            /* Do not advance just because an arbitrary timeout expired.
+             * The exact report waits for its TX result; failed TX retries
+             * this same edge. Disconnect/cancel abandons the old host. */
+            while (ready(t->conn) && (release || t->cancel==atomic_load(&s_cancel)) && atomic_load(&s_tx_status)==INT_MIN)
+                xSemaphoreTake(s_credit,pdMS_TO_TICKS(20));
+            if (atomic_load(&s_tx_status)==0) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                return true;
+            }
+            if (!ready(t->conn) || (!release && t->cancel!=atomic_load(&s_cancel))) return false;
+            continue;
         }
         if (rc!=BLE_HS_ENOMEM && rc!=BLE_HS_EBUSY && rc!=BLE_HS_EAGAIN) return false;
         xSemaphoreTake(s_credit,pdMS_TO_TICKS(20)); /* retain this exact character */
@@ -335,7 +351,8 @@ void muse_hid_kbd_shutdown(void)
 {
     muse_hid_kbd_cancel(); muse_stt_cancel();
     if (atomic_exchange(&s_adv,false)) ble_gap_adv_stop();
-    unsigned conn=atomic_load(&s_conn);
+    unsigned conn=atomic_exchange(&s_conn,NO_CONN);
+    atomic_store(&s_secure,false); atomic_store(&s_subscribed,false);
     if (conn!=NO_CONN) ble_gap_terminate(conn,BLE_ERR_REM_USER_CONN_TERM);
 }
 void muse_hid_kbd_apply(void)
@@ -369,11 +386,12 @@ esp_err_t muse_hid_kbd_init(void)
     if (s_queue) return ESP_OK;
     esp_err_t err=nvs_open("kbd",NVS_READWRITE,&s_nvs);
     if (err!=ESP_OK) return err;
-    uint8_t on=0; nvs_get_u8(s_nvs,"enabled",&on); atomic_store(&s_enabled,on!=0);
+    uint8_t on=0; nvs_get_u8(s_nvs,"enabled",&on);
     size_t size=sizeof(s_hosts);
     if (nvs_get_blob(s_nvs,"hosts",&s_hosts,&size)!=ESP_OK || size!=sizeof(s_hosts) || s_hosts.count>2) memset(&s_hosts,0,sizeof(s_hosts));
     s_credit=xSemaphoreCreateBinary(); s_lock=xSemaphoreCreateMutex(); s_queue=xQueueCreate(1,sizeof(typing_t));
     if (!s_credit || !s_lock || !s_queue) return ESP_ERR_NO_MEM;
     if (xTaskCreatePinnedToCoreWithCaps(typing_task,"hid_type",4096,NULL,4,NULL,0,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS) return ESP_ERR_NO_MEM;
+    atomic_store(&s_enabled,on!=0); /* publish only after host callbacks can use the locks */
     return ESP_OK;
 }

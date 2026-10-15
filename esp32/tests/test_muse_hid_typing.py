@@ -13,6 +13,7 @@ class HidTyping(unittest.TestCase):
         functions=source[source.index('static bool ready('):source.index('bool muse_hid_kbd_type(')]
         code=r'''
 #include <assert.h>
+#include <limits.h>
 #include <setjmp.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -27,6 +28,7 @@ class HidTyping(unittest.TestCase):
 #define BLE_HS_EAGAIN 8
 #define MUSE_LAT_TYPED 9
 static atomic_uint s_conn=42,s_cancel;
+static atomic_int s_tx_status;
 static atomic_bool s_secure=true,s_subscribed=true;
 static uint8_t s_suspend;
 static int s_credit,s_queue;
@@ -43,7 +45,8 @@ static struct os_mbuf *ble_hs_mbuf_from_flat(const void *p,int n) {
 static int ble_gatts_notify_custom(int conn,int attr,struct os_mbuf *m) {
  assert(conn==42 && attr==88);
  if(++attempts%17==0){free(m);return BLE_HS_ENOMEM;}
- memcpy(reports[count++],m->data,8);free(m);
+ if(attempts%23==0){free(m);atomic_store(&s_tx_status,BLE_HS_EBUSY);return 0;}
+ memcpy(reports[count++],m->data,8);free(m);atomic_store(&s_tx_status,0);
  if(cancel_at && count==cancel_at)atomic_fetch_add(&s_cancel,1);
  return 0;
 }
