@@ -182,8 +182,9 @@ persists across reboots and sends committed dictation to an iPhone or Mac
 as a US-layout BLE keyboard. Phone setup takes priority over HID advertising.
 See [Keyboard and speech setup](../docs/KEYBOARD.md) for credential setup,
 HMAC key-slot checks, host pairing, the BLE ownership audit, and measurement
-instructions. Hardware latency and battery cost are **pending measurement**;
-this branch has only been built and host-tested. Build with
+instructions. USB bench boot, microphone capture, speaker playback, encrypted
+storage and Keyboard toggle persistence are checked; cloud/host acceptance,
+hardware latency and battery cost remain **pending measurement**. Build with
 `tools/muse/board.sh build sticks3`.
 
 M5Stack ships the StickS3 with UiFlow2, which hands the ESP32-S3's USB to its

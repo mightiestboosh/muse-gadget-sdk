@@ -1,8 +1,9 @@
 # StickS3 voice and Bluetooth keyboard
 
 This branch adds ElevenLabs reply speech, hold/tap recording, and an opt-in
-US-layout BLE dictation keyboard. **Validation is build-only. No StickS3,
-iPhone, or Mac pairing session was available; hardware acceptance is pending.**
+US-layout BLE dictation keyboard. **USB bench installation, audio playback,
+encrypted storage and Keyboard setting persistence have been checked on a
+StickS3. Cloud speech, dictation and keyboard host acceptance remain pending.**
 
 ## Build and initial setup
 
@@ -30,7 +31,8 @@ The helper alias is `sticks3`, its overlay is
 completed before editing firmware; its image and log are retained locally in
 `build-stock-sticks3/`. The physical baseline (pair, hold, see a reply and save
 the serial log) remains to be performed before comparing modified hardware.
-The user explicitly authorized build-only work while hardware is unavailable.
+The user initially authorized build-only work, then supplied a StickS3 and
+authorized installation and device testing.
 
 The board profile enables HMAC-encrypted NVS with eFuse key slot 0. Before the
 first encrypted boot, inspect the actual device's eFuse summary: slot 0 must
@@ -199,7 +201,10 @@ sampled mic frame, first audible word and physical silence. Captions-only
 turns do not claim an audible response. STT/HID jobs carry a turn ID so stale
 jobs cannot contaminate a replacement turn's timestamps.
 
-**No latency or battery measurements have been made on this branch.** Run at
+**End-to-end latency and battery measurements remain pending.** Two offline
+USB bench presses produced mic-read proxies of 14 ms and 9 ms; these were
+missing-key dictation attempts, not completed turns or measurements of a newly
+sampled frame. They do not establish the latency targets below. Run at
 least ten turns per mode in each row, in a separate log per condition; do not
 mix Wi-Fi environments in a median. Record `>power` before/after idle periods
 with Keyboard off, advertising, and connected (screen off) to measure the
@@ -236,7 +241,13 @@ Verified on macOS, 2026-10-15, with ESP-IDF `v6.0.1` (clean tag,
 | Full host suite | **612 tests pass, no skips** |
 | Every StickS3 board-overlay setting applied | Pass |
 | HTTP/WebSocket header-dump strings absent from StickS3 image | Pass |
-| Physical device acceptance | Pending hardware |
+| StickS3 USB installation and reboot | Pass; no panic or unexpected reboot in captured runs |
+| ES8311 microphone self-test | Pass; live left-channel samples, about 16.14 kHz capture |
+| Built-in MP3 playback through onboard speaker | Pass; user confirmed sound and display |
+| HMAC-encrypted NVS first boot and reboot | Pass; slot 0 was empty, provisioned successfully, reused on reboot |
+| Runtime Keyboard toggle survives reboot | Pass; dictation mode observed after restart, restored Off afterward |
+| Muse BLE setup handshake | Reached device confirmation; account/Wi-Fi setup still pending |
+| Cloud speech, dictation, host pairing and battery acceptance | Pending credentials/setup and further hardware tests |
 
 Local verification logs are retained in `build-validation-sticks3/`; they
 contain no configured SDK token or ElevenLabs key. The test environment
@@ -257,6 +268,14 @@ request batching, all ASCII mappings and Unicode normalization, 500-character
 typing with simulated notification pressure/cancel, STT serialization and
 committed-only parsing, battery volume policy, and the timing ring/medians.
 
+USB bench logs and the private 8 MB factory UiFlow2 backup are retained locally
+in ignored `build-hardware-sticks3/`; never commit the backup, which may hold
+factory credentials. The factory partition table placed NVS at `0x9000`,
+whereas Muse uses `0x11000..0x1cfff`. Only the new Muse NVS range, previously
+factory application code, was initialized before flashing. Existing factory
+NVS was not erased. No Secure Boot or flash encryption was enabled. The full
+612-test host suite passed again before installation.
+
 Still unchecked on hardware:
 
 - [ ] Stock pairing, hold-to-talk and serial baseline.
@@ -270,7 +289,8 @@ Still unchecked on hardware:
 - [ ] Home Wi-Fi and compatible iPhone hotspot, on USB and battery.
 - [ ] At least ten turns per test condition; latency gaps reported with numbers.
 - [ ] Keyboard advertising/connected battery cost and actual light sleep measured.
-- [ ] Encrypted NVS boot verified; key absent from serial logs.
+- [x] Encrypted NVS first boot and reboot verified.
+- [ ] ElevenLabs key configured and verified absent from serial logs during live requests.
 
 ## References
 
