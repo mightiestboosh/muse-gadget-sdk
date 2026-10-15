@@ -25,6 +25,8 @@
 #include "esp_random.h"
 #include "host/ble_hs.h"
 #include "host/ble_store.h"
+#include "services/gap/ble_svc_gap.h"
+#include "muse_hid_kbd.h"
 
 #include "muse_chat.h"
 #include "muse_link.h"
@@ -162,10 +164,10 @@ static void run_command(char *cmd)
         if (strlen(v) > MUSE_TTS_KEY_MAX) {
             res = "error: key too long";
         } else {
-            muse_settings_set_tts_key(v);
+            if (muse_settings_set_tts_key(v) != ESP_OK) res = "error: encrypted NVS required, or key not saved";
         }
     } else if (!strcmp(cmd, "tts.voice")) {
-        if (strlen(v) > MUSE_TTS_VOICE_MAX) {
+        if (strlen(v) > MUSE_TTS_VOICE_MAX || strspn(v, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != strlen(v)) {
             res = "error: voice ID too long";
         } else {
             muse_settings_set_tts_voice(v);
@@ -283,6 +285,31 @@ void muse_ble_configure_host(void)
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_store_config_init();
+#if CONFIG_MUSE_KBD_ENABLE
+    muse_hid_kbd_register();
+#endif
+}
+
+bool muse_ble_advertise_override(bool setup_active)
+{
+#if CONFIG_MUSE_KBD_ENABLE
+    if (!setup_active && muse_hid_kbd_advertise()) return true;
+    muse_hid_kbd_shutdown();
+#else
+    (void)setup_active;
+#endif
+    /* Preserve the phone settings service's passkey policy and GAP name. */
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_ONLY;
+    ble_hs_cfg.sm_mitm = 1;
+    ble_svc_gap_device_name_set(s_name);
+    return false;
+}
+
+void muse_ble_shutdown(void)
+{
+#if CONFIG_MUSE_KBD_ENABLE
+    muse_hid_kbd_shutdown();
+#endif
 }
 
 void muse_ble_set_name(const char *name)
@@ -344,6 +371,7 @@ int muse_ble_gap_event(struct ble_gap_event *ev)
 
 void muse_ble_apply(void)
 {
+    muse_hid_kbd_apply();
     if (!muse_settings_ble_on() && s_conn != BLE_HS_CONN_HANDLE_NONE && s_secure) {
         /* Drop a phone-setup session; the Muse app's unencrypted setup link stays. */
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);

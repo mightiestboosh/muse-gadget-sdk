@@ -21,6 +21,8 @@
 #include "freertos/task.h"
 
 #include "muse_audio.h"
+#include "muse_hid_kbd.h"
+#include "muse_stt.h"
 #include "muse_battery.h"
 #include "muse_board.h"
 #include "muse_ble.h"
@@ -66,6 +68,10 @@ void muse_app_run(const muse_board_t *board)
     ESP_LOGI(TAG, "board: %s", board->name);
     ESP_ERROR_CHECK(board->init());
     ESP_ERROR_CHECK(muse_settings_init());
+#if CONFIG_MUSE_KBD_ENABLE
+    ESP_ERROR_CHECK(muse_hid_kbd_init());
+    ESP_ERROR_CHECK(muse_stt_init());
+#endif
     muse_settings_set_listener(on_setting);
     muse_state_init();
     muse_battery_init();
@@ -93,6 +99,7 @@ void muse_app_run(const muse_board_t *board)
     /* Home Link owns the radios; these just hand it the saved settings. */
     muse_wifi_apply();
     muse_ble_apply();
+    if (muse_hid_kbd_enabled()) muse_stt_prewarm();
     ESP_LOGI(TAG, "ready: free heap %u internal, %u psram",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

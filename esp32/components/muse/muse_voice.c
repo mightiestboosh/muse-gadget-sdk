@@ -37,12 +37,24 @@
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
+#include "muse_hid_kbd.h"
+#include "muse_stt.h"
+#include "muse_latency.h"
+#include "muse_tts.h"
 
 static const char *TAG = "muse_voice";
 
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+#define MAX_SECS CONFIG_MUSE_PTT_MAX_S
+#else
 #define MAX_SECS 15
+#endif
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+#define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS + PRE_CHUNKS * MUSE_AUDIO_CHUNK)
+#else
 #define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS)
+#endif
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */
 #if CONFIG_MUSE_BOARD_M5STACK_CARDPUTER_ADV || CONFIG_MUSE_BOARD_AI_PASSPORT
 #define PRE_CHUNKS 6                                   /* 120 ms; a 320 ms upload burst stalls on the ADV and C3 */
@@ -172,9 +184,23 @@ static bool got_event(muse_ptt_t type)
     bool hit = false;
     while (xQueueReceive(s_queue, &ev, 0) == pdTRUE) {
         muse_state_poke();
-        hit |= ev.type == type;
+        if (ev.type == type) return true; /* preserve a following release */
     }
     return hit;
+}
+
+/* Preserve a new press behind this recording's stop. Side cancel wins if
+ * it arrived during the capture tail, even after send was requested. */
+static int recording_event(void)
+{
+    muse_input_event_t ev;
+    int result=-1;
+    while (xQueuePeek(s_queue,&ev,0)==pdTRUE && ev.type!=MUSE_PTT_DOWN) {
+        xQueueReceive(s_queue,&ev,0);
+        if (ev.type==MUSE_PTT_CANCEL) result=MUSE_PTT_CANCEL;
+        else if (ev.type==MUSE_PTT_UP && result<0) result=MUSE_PTT_UP;
+    }
+    return result;
 }
 
 /* Level stats of a recording, gathered chunk by chunk for the log. */
@@ -263,10 +289,12 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
 
     size_t n = 0;
     if (barge_in) {
+#if !CONFIG_MUSE_PTT_DUAL_GESTURE
         /* Pressed during playback: the queued tail of the reply is still sounding. */
         for (int i = 0; i < SETTLE_CHUNKS; i++) {
             muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK);
         }
+#endif
     } else {
         for (size_t i = 0; i < s_pre_fill; i++) {
             pre_get(i, s_chunk);
@@ -279,6 +307,7 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     size_t stop_at = MAX_FRAMES;
     while (n + MUSE_AUDIO_CHUNK <= stop_at) {
         if (muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK) != ESP_OK) {
+            ok=false; strlcpy(why,"MIC CAPTURE FAILED",cap);
             break;
         }
         muse_state_set_level(muse_audio_level(s_chunk, MUSE_AUDIO_CHUNK));
@@ -309,19 +338,29 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
             go_live();
         }
         muse_state_set_progress((float)n / MAX_FRAMES);
-        if (!heard && ok && tick) {
-            muse_state_set_caption("%s %.1fs", s_live ? "LISTENING" : "RECORDING", (double)n / MUSE_AUDIO_RATE);
+        if (ok && tick && (!heard || muse_input_tap_mode())) {
+            muse_state_set_caption("%s %.1fs", muse_input_tap_mode() ? "TAP TO SEND" : s_live ? "LISTENING" : "RECORDING", (double)(n-pre) / MUSE_AUDIO_RATE);
         }
         /*
          * Capture runs 60-80 ms behind real time and people let go on their
          * last syllable, so keep going briefly after release.
          */
-        if (!released && got_event(MUSE_PTT_UP)) {
+        int control=recording_event();
+        if (control==MUSE_PTT_CANCEL) {
+            ok=false; strlcpy(why,"RECORDING CANCELLED",cap); break;
+        }
+        if (!released && control==MUSE_PTT_UP) {
             released = true;
             stop_at = n + TAIL_FRAMES < MAX_FRAMES ? n + TAIL_FRAMES : MAX_FRAMES;
         }
     }
     muse_state_set_level(0);
+    if (!ok) {
+        muse_hatch_turn_cancel();
+        free(s_rec); s_rec=NULL;
+        muse_input_reset_ptt();
+        muse_latency_end(muse_latency_turn());
+    }
     *held = n - pre;
 
     char tail[160];
@@ -346,6 +385,7 @@ static void go_idle(const char *caption);
  */
 static bool hatch_reply(bool *delivered)
 {
+    uint32_t latency_turn=muse_latency_turn();
     muse_state_set_mode(MUSE_MODE_THINKING);
     muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
     static int16_t buf[MUSE_AUDIO_CHUNK];
@@ -394,6 +434,7 @@ static bool hatch_reply(bool *delivered)
         if (got_event(MUSE_PTT_DOWN)) {
             ESP_LOGI(TAG, "reply interrupted");
             muse_hatch_turn_cancel();
+            muse_audio_playback(false);
             muse_state_set_level(0);
             return true;
         }
@@ -403,6 +444,9 @@ static bool hatch_reply(bool *delivered)
                 speaking = true;
                 muse_state_set_mode(MUSE_MODE_SPEAKING);
                 ESP_LOGI(TAG, "reply audio after %.2fs", (esp_timer_get_time() - t0) / 1e6);
+                muse_audio_playback(true);
+                if (muse_latency_seen(latency_turn,MUSE_LAT_TTS_BYTE) && muse_settings_speaker_on())
+                    muse_latency_mark(latency_turn,MUSE_LAT_SOUND);
             }
             muse_state_set_level(muse_audio_level(buf, n));
             muse_audio_write(buf, n);
@@ -420,6 +464,8 @@ static bool hatch_reply(bool *delivered)
         }
     }
     muse_state_set_level(0);
+    muse_audio_finish_playback();
+    muse_latency_end(latency_turn);
     ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_RATE,
              (esp_timer_get_time() - t0) / 1e6);
     if (!played) {
@@ -431,6 +477,7 @@ static bool hatch_reply(bool *delivered)
 
 static void go_idle(const char *caption)
 {
+    muse_audio_playback(false);
     muse_state_set_progress(0);
     muse_state_set_mode(MUSE_MODE_IDLE);
     muse_state_set_caption("%s", caption);
@@ -484,6 +531,7 @@ static void set_resting(bool rest)
  * record only if it's still held after a tap's length. False if it was let
  * go sooner: it only woke Muse.
  */
+#if !CONFIG_MUSE_PTT_DUAL_GESTURE
 static bool held_on_waking(void)
 {
     s_settle = 0;   /* nothing played: no tail of Muse's own to skip */
@@ -495,6 +543,8 @@ static bool held_on_waking(void)
     }
     return !got_event(MUSE_PTT_UP);
 }
+
+#endif
 
 static void drop_rec(void)
 {
@@ -724,7 +774,9 @@ static bool finish_note(void)
             muse_hatch_turn_end();   /* before the chirp, which takes ~90 ms */
             fed = true;
         }
+#if !CONFIG_MUSE_PTT_DUAL_GESTURE || CONFIG_MUSE_PTT_CUES
         muse_audio_chirp(0);
+#endif
         if (s_live && !fed) {
             /* Hatch is behind (still connecting, say): the rest from the kept note. */
             muse_state_set_mode(MUSE_MODE_THINKING);
@@ -746,7 +798,9 @@ static bool finish_note(void)
     }
 #endif
     muse_hatch_turn_end();   /* before the chirp, which takes ~90 ms */
+#if !CONFIG_MUSE_PTT_DUAL_GESTURE || CONFIG_MUSE_PTT_CUES
     muse_audio_chirp(0);
+#endif
     return hatch_reply(&delivered);
 }
 
@@ -786,6 +840,66 @@ static bool can_record(void)
     return true;
 }
 
+#if CONFIG_MUSE_KBD_ENABLE
+/* The input task owns gestures; this task owns the ADC, exactly as in the
+ * Muse path. TLS and 200 ms PCM sends run independently in muse_stt. */
+static void dictation(bool barge_in)
+{
+    uint32_t turn=muse_latency_turn();
+    const char *error=NULL;
+    if (!muse_settings_tts_key_len()) error="SET ELEVENLABS KEY FIRST";
+    else if (!muse_wifi_connected()) error="DICTATION NEEDS WI-FI";
+    else if (muse_hid_kbd_state()!=MUSE_KBD_CONNECTED) error="PAIR KEYBOARD FIRST";
+    else if (muse_stt_start(turn)!=ESP_OK) error="DICTATION BUSY - TRY AGAIN";
+    if (error) {
+        muse_input_reset_ptt(); muse_latency_end(turn); go_idle(error); return;
+    }
+    muse_state_set_mode(MUSE_MODE_LISTENING);
+    muse_audio_playback(false);
+    if (!barge_in) for (size_t i=0;i<s_pre_fill;i++) {
+        pre_get(i,s_chunk);
+        if (!muse_stt_audio(s_chunk,MUSE_AUDIO_CHUNK)) error="DICTATION BUFFER FULL";
+    }
+    size_t frames=0;
+    bool send=false;
+    while (!error && frames<MAX_FRAMES) {
+        int control=recording_event();
+        if (control==MUSE_PTT_CANCEL) { error="DICTATION CANCELLED"; break; }
+        if (control==MUSE_PTT_UP) { send=true; break; }
+        if (muse_audio_read(s_chunk,MUSE_AUDIO_CHUNK)!=ESP_OK || !muse_stt_audio(s_chunk,MUSE_AUDIO_CHUNK)) {
+            error="DICTATION CAPTURE FAILED"; break;
+        }
+        frames+=MUSE_AUDIO_CHUNK;
+        muse_state_set_level(muse_audio_level(s_chunk,MUSE_AUDIO_CHUNK));
+        muse_state_set_progress((float)frames/(MUSE_AUDIO_RATE*MAX_SECS));
+        if (frames%(MUSE_AUDIO_CHUNK*5)==0) muse_state_set_caption("%s %.1fs",
+            muse_input_tap_mode()?"TAP TO SEND":"DICTATING",(double)frames/MUSE_AUDIO_RATE);
+    }
+    muse_state_set_level(0);
+    if (!send && !error) { send=true; muse_input_reset_ptt(); }
+    if (send && !error) {
+        muse_stt_finish();
+        muse_state_set_mode(MUSE_MODE_THINKING);
+        muse_state_set_caption("FINISHING DICTATION...");
+        while (muse_stt_busy()) {
+            muse_input_event_t next;
+            if (xQueuePeek(s_queue,&next,0)==pdTRUE && next.type==MUSE_PTT_DOWN) {
+                /* Keep the replacement press for the outer loop. It either
+                 * starts the next job or reports that cleanup is still busy;
+                 * it must not be drained by a search for side cancel. */
+                muse_stt_cancel();
+                return;
+            }
+            if (got_event(MUSE_PTT_CANCEL)) { error="DICTATION CANCELLED"; break; }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (muse_stt_failed()) error="DICTATION FAILED - NOTHING TYPED";
+    }
+    if (error) { muse_stt_cancel(); muse_input_reset_ptt(); muse_latency_end(turn); }
+    go_idle(error ? error : "DICTATION SENT");
+}
+#endif
+
 static void voice_task(void *arg)
 {
     bool pending_down = false;
@@ -800,7 +914,7 @@ static void voice_task(void *arg)
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
-            if (held_due() && !press_waiting()) {
+            if (!muse_hid_kbd_enabled() && held_due() && !press_waiting()) {
                 set_resting(false);   /* full power while it goes, even asleep */
                 muse_wifi_power(MUSE_WIFI_FULL);
                 pending_down = send_held(asleep);
@@ -832,9 +946,11 @@ static void voice_task(void *arg)
                 s_mp3test = false;
                 int16_t *pcm = NULL;
                 size_t n = muse_hatch_mp3_selftest(&pcm);
+                muse_audio_playback(true);
                 for (size_t i = 0; i < n; i += MUSE_AUDIO_CHUNK) {
                     muse_audio_write(pcm + i, n - i < MUSE_AUDIO_CHUNK ? n - i : MUSE_AUDIO_CHUNK);
                 }
+                muse_audio_playback(false);
                 free(pcm);
                 pre_reset();
             }
@@ -854,11 +970,25 @@ static void voice_task(void *arg)
             }
             wake = ev.wake;
         }
+#if !CONFIG_MUSE_PTT_DUAL_GESTURE
         if (wake && !held_on_waking()) {
             continue;   /* a tap: it only woke Muse */
         }
+#else
+        (void)wake;
+#endif
         muse_wifi_power(MUSE_WIFI_FULL);
+#if CONFIG_MUSE_KBD_ENABLE
+        if (muse_hid_kbd_enabled()) {
+            dictation(pending_down);
+            pending_down=false;
+            pre_reset();
+            continue;
+        }
+#endif
         if (!can_record()) {
+            muse_input_reset_ptt();
+            muse_latency_end(muse_latency_turn());
             pending_down = false;
             continue;
         }
@@ -866,6 +996,7 @@ static void voice_task(void *arg)
         char why[96];
         bool ok = record(pending_down, &held, why, sizeof(why));
         pending_down = false;
+#if !CONFIG_MUSE_PTT_DUAL_GESTURE
         if (held < MIN_HELD_FRAMES && !wake) {
             muse_hatch_turn_cancel();
             drop_rec();
@@ -873,6 +1004,7 @@ static void voice_task(void *arg)
             go_idle("HOLD LONGER TO TALK");
             continue;
         }
+#endif
         if (!ok) {
             pre_reset();
             go_idle(why);   /* Hatch failed it while recording */

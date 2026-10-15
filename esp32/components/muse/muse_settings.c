@@ -134,7 +134,9 @@ esp_err_t muse_settings_init(void)
     load_str("host", s.host, sizeof(s.host));
     load_str("vm", s.vm, sizeof(s.vm));
     load_str("token", s.token, sizeof(s.token));
+#if CONFIG_HOMEHUB_NVS_ENCRYPTION
     load_str("tts_key", s.tts_key, sizeof(s.tts_key));
+#endif
     load_str("tts_voice", s.tts_voice, sizeof(s.tts_voice));
 
     s.volume = clampi(s.volume, 0, 100);
@@ -298,13 +300,25 @@ void muse_settings_set_hatch_vm(const char *vm)
     notify(MUSE_SETTING_HATCH);
 }
 
-void muse_settings_set_tts_key(const char *key)
+esp_err_t muse_settings_set_tts_key(const char *key)
 {
-    LOCKED({
-        strlcpy(s.tts_key, key ? key : "", sizeof(s.tts_key));
-        save_str("tts_key", s.tts_key);
-    });
+#if !CONFIG_HOMEHUB_NVS_ENCRYPTION
+    (void)key;
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!key) key = "";
+    if (strlen(key) > MUSE_TTS_KEY_MAX) return ESP_ERR_INVALID_ARG;
+    for (const char *p = key; *p; p++) if ((unsigned char)*p < 33 || (unsigned char)*p > 126) return ESP_ERR_INVALID_ARG;
+    esp_err_t err;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    err = nvs_set_str(s_nvs, "tts_key", key);
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    if (err == ESP_OK) strlcpy(s.tts_key, key, sizeof(s.tts_key));
+    xSemaphoreGive(s_lock);
+    if (err != ESP_OK) return err;
     notify(MUSE_SETTING_TTS);
+    return ESP_OK;
+#endif
 }
 
 void muse_settings_set_tts_voice(const char *voice)

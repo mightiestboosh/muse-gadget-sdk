@@ -36,6 +36,7 @@
 typedef enum {
     MUSE_PTT_DOWN,
     MUSE_PTT_UP,
+    MUSE_PTT_CANCEL,
 } muse_ptt_t;
 
 typedef struct {
@@ -58,6 +59,9 @@ bool muse_input_cpu_pd(void);
 
 /* PTT events are posted to `queue` (items are muse_input_event_t). */
 esp_err_t muse_input_start(QueueHandle_t queue);
+bool muse_input_recording(void);
+bool muse_input_tap_mode(void);
+void muse_input_reset_ptt(void); /* a failed capture must not stay latched */
 
 /* LVGL microphone press/release edges; handled by the existing input task. */
 void muse_input_touch_talk(bool pressed);

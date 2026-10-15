@@ -266,4 +266,44 @@ menu "Muse"
             (about 220 KB), which still covers a push-to-talk turn. Board
             overlays with 2 MB of PSRAM turn it on.
 
+    config MUSE_PTT_DUAL_GESTURE
+        bool "Hold or tap to talk"
+        depends on MUSE_ENABLED
+        default y if MUSE_BOARD_M5STACK_STICKS3
+        help
+            Start on press; a short release latches recording, the next
+            press sends. Side cancels. Other boards keep their existing UI.
+
+    config MUSE_PTT_TAP_MS
+        int "Tap threshold (ms)"
+        depends on MUSE_PTT_DUAL_GESTURE
+        range 100 1000
+        default 400
+
+    config MUSE_PTT_MAX_S
+        int "Maximum recording (seconds)"
+        depends on MUSE_PTT_DUAL_GESTURE
+        range 1 60
+        default 60
+
+    config MUSE_PTT_CUES
+        bool "Recording stop cue"
+        depends on MUSE_PTT_DUAL_GESTURE
+        default n
+        help
+            Plays only after capture has ended; no sound delays the start.
+
+    config MUSE_KBD_ENABLE
+        bool "BLE dictation keyboard"
+        depends on MUSE_BOARD_M5STACK_STICKS3 && HOMEHUB_NVS_ENCRYPTION
+        default n
+        help
+            Runtime Keyboard switch in the side menu. US layout, encrypted
+            bonded HID, ElevenLabs Scribe v2 Realtime manual commit.
+
+    config MUSE_LATENCY
+        bool "Record the last ten voice turn timings"
+        depends on MUSE_ENABLED
+        default y if MUSE_BOARD_M5STACK_STICKS3
+
 endmenu

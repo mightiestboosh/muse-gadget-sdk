@@ -359,7 +359,9 @@ static struct {
     void (*set_mic_gain)(esp_codec_dev_handle_t, int);
     void (*audio_power)(bool);
     void (*codec_power)(bool);
-} board = { board_audio_init, NULL, board_audio_power, board_codec_power }, *muse_board = &board;
+    void (*speaker_enable)(bool);
+} board = { board_audio_init, NULL, board_audio_power, board_codec_power, NULL }, *muse_board = &board;
+static void muse_audio_playback(bool on) { (void)on; }
 #include <math.h>
 #define CHANNELS 2
 #define HPF_HZ 80.0f

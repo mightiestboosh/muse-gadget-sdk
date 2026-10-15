@@ -32,6 +32,7 @@
 #include "src/misc/lv_area_private.h"            /* lv_area_intersect, for the ring */
 
 #include "muse_ble.h"
+#include "muse_hid_kbd.h"
 #include "muse_board.h"
 #include "muse_input.h"
 #include "muse_chat.h"
@@ -112,6 +113,9 @@ static lv_obj_t *s_settings;
 static lv_obj_t *s_dots[2];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
+#if CONFIG_MUSE_KBD_ENABLE
+static lv_obj_t *s_kbd_icon;
+#endif
 static lv_obj_t *s_cover;
 static lv_obj_t *s_pair;
 static lv_obj_t *s_pair_code;
@@ -932,6 +936,9 @@ static void build_screen(void)
     lv_obj_align(status, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 40 : s_small ? 1 : 20 + s_dy);
     s_wifi_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_ble_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
+#if CONFIG_MUSE_KBD_ENABLE
+    s_kbd_icon=make_label(status,&lv_font_montserrat_14,COLOR_DIM);
+#endif
     s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
 
     /* The compact layout leaves the state to the avatar and the caption,
@@ -946,6 +953,11 @@ static void build_screen(void)
      * Muse app. update_chrome() fills it in, shortens it to the hex tail on a
      * screen too narrow for the whole thing, and empties it once paired. */
     s_name_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, COLOR_DIM);
+#if CONFIG_MUSE_KBD_ENABLE
+    lv_obj_set_width(s_name_lbl,s_w-4);
+    lv_label_set_long_mode(s_name_lbl,LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(s_name_lbl,LV_TEXT_ALIGN_CENTER,0);
+#endif
     lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 88 : s_small ? 32 : 60 + s_dy);
     if (muse_board->rim_controls) {
         /* Safe chord below the round panel's top, not the full 466 px width. */
@@ -1291,6 +1303,12 @@ static void update_chrome(float now)
         return;
     }
     s_next_settings_tick = now + SETTINGS_TICK_S;
+#if CONFIG_MUSE_KBD_ENABLE
+    muse_kbd_state_t keys=muse_hid_kbd_state();
+    lv_label_set_text(s_kbd_icon,keys==MUSE_KBD_ADVERTISING && (int)(now*2)%2 ? "" : LV_SYMBOL_KEYBOARD);
+    lv_obj_set_style_text_color(s_kbd_icon,lv_color_hex(keys==MUSE_KBD_CONNECTED ? COLOR_ACCENT :
+        keys==MUSE_KBD_OFF ? COLOR_METER_OFF : COLOR_DIM),0);
+#endif
 
     if (s_tv) {
         int page = lv_tileview_get_tile_active(s_tv) == s_settings;
@@ -1340,6 +1358,10 @@ static void update_chrome(float now)
     const lv_font_t *name_font = s_small ? &lv_font_unscii_8 : &lv_font_unscii_16;
     int name_cw = lv_font_get_glyph_width(name_font, 'M', ' ');
     const char *shown = paired ? "" : b.name;
+#if CONFIG_MUSE_KBD_ENABLE
+    char keyboard_host[40]; muse_hid_kbd_host(keyboard_host);
+    if (paired) shown=keyboard_host;
+#endif
 #if LV_USE_SNAPSHOT
     if (!paired && s_bench_demo) shown = "MuseGadget-DEMO";
 #endif

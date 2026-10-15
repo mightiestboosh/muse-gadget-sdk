@@ -133,7 +133,15 @@ static int pmic_gpio_setup(int16_t gpio, audio_gpio_dir_t dir, audio_gpio_mode_t
 static int pmic_gpio_set(int16_t gpio, bool high)
 {
     (void)gpio;
-    return pmic_update(PMIC_GPIO_OUT, PMIC_SPK, high) == ESP_OK ? ESP_CODEC_DEV_OK : ESP_CODEC_DEV_WRITE_FAIL;
+    /* The ES8311 may enable PA while opening the shared ADC/DAC. Playback
+     * alone owns the amp; speaker_enable() applies its gate after open. */
+    (void)high;
+    return pmic_update(PMIC_GPIO_OUT, PMIC_SPK, false) == ESP_OK ? ESP_CODEC_DEV_OK : ESP_CODEC_DEV_WRITE_FAIL;
+}
+
+static void speaker_enable(bool on)
+{
+    if (pmic_update(PMIC_GPIO_OUT,PMIC_SPK,on)!=ESP_OK) ESP_LOGW(TAG,"speaker gate failed");
 }
 
 static bool pmic_gpio_get(int16_t gpio)
@@ -184,6 +192,7 @@ static esp_err_t init(void)
 
     ESP_RETURN_ON_ERROR(muse_gpio_button_init(&s_talk, TALK_GPIO), TAG, "talk button");
     ESP_RETURN_ON_ERROR(muse_gpio_button_init(&s_aux, AUX_GPIO), TAG, "aux button");
+    s_talk.debounce_wake = s_aux.debounce_wake = true;
     /* A button that woke the board from power-off is still down; don't count it. */
     s_talk.pressed = gpio_get_level(TALK_GPIO) == 0;
     s_aux.pressed = gpio_get_level(AUX_GPIO) == 0;
@@ -421,6 +430,7 @@ static const muse_board_t s_board = {
     .panel_sleep = panel_sleep,
     .display_pause = display_pause,
     .audio_init = audio_init,
+    .speaker_enable = speaker_enable,
     .mic_slot = 0,              /* one mic, on the left slot */
     .poll_buttons = poll_buttons,
     .wait_buttons = wait_buttons,

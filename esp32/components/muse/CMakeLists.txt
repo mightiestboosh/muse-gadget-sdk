@@ -42,6 +42,15 @@ if(CONFIG_MUSE_ENABLED)
         "muse_lv_mem.c"
         "muse_link.c"
         "muse_ble.c")
+    if(CONFIG_MUSE_PTT_DUAL_GESTURE)
+        list(APPEND srcs "muse_ptt.c")
+    endif()
+    if(CONFIG_MUSE_LATENCY)
+        list(APPEND srcs "muse_latency.c")
+    endif()
+    if(CONFIG_MUSE_KBD_ENABLE)
+        list(APPEND srcs "muse_hid_kbd.c" "muse_hid_text.c" "muse_stt.c" "muse_stt_protocol.c")
+    endif()
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_tts.c")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
@@ -121,9 +130,19 @@ elseif(CONFIG_HOMEHUB_VOICE)
     list(APPEND embed "test_reply.mp3")
 endif()
 
+if(CONFIG_MUSE_ENABLED OR CONFIG_HOMEHUB_VOICE)
+    # IDF's DEBUG request dumps include xi-api-key. Compile those dumps out,
+    # even if another task later raises runtime logging to DEBUG.
+    foreach(secret_transport esp_http_client tcp_transport)
+        idf_component_get_property(secret_transport_lib ${secret_transport} COMPONENT_LIB)
+        target_compile_definitions(${secret_transport_lib} PRIVATE LOG_LOCAL_LEVEL=ESP_LOG_INFO)
+    endforeach()
+endif()
+
 set(muse_priv_requires
     esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash esp_pm esp_event esp_netif
-    bt esp-tls mbedtls esp_app_format esp_http_client
+    bt esp-tls mbedtls esp_app_format esp_http_client tcp_transport
+    espressif__esp_websocket_client
     noise_core minimp3
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
     esp_driver_pcnt)

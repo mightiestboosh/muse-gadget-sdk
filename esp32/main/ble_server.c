@@ -772,6 +772,7 @@ static void shutdown_stack(bool release_memory) {
     s_shutting_down = true;
     s_advertising_enabled = false;
     ESP_LOGI(TAG, "shutting down BLE");
+    if (s_companion.on_shutdown) s_companion.on_shutdown();
 
     int rc = ble_gap_adv_stop();
     if (rc != 0) {
@@ -899,6 +900,8 @@ static void start_advertising(void) {
     }
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) return;
     if (s_advertising_active) return;
+    if (s_companion.advertise_override &&
+        s_companion.advertise_override(!config_setup_complete())) return;
     struct ble_gap_adv_params advp = {0};
     advp.conn_mode = BLE_GAP_CONN_MODE_UND;
     advp.disc_mode = BLE_GAP_DISC_MODE_GEN;

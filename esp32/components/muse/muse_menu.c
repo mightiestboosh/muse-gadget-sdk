@@ -36,6 +36,7 @@
 #include "muse_text.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
+#include "muse_hid_kbd.h"
 
 static const char *TAG = "muse_menu";
 
@@ -69,6 +70,10 @@ typedef enum {
     ITEM_SLEEP,
     ITEM_PHONE,
     ITEM_WIFI,
+#if CONFIG_MUSE_KBD_ENABLE
+    ITEM_KEYBOARD,
+    ITEM_FORGET_KEYBOARD,
+#endif
     ITEM_INFO,
     ITEM_BATTERY,
     ITEM_RESET,
@@ -86,6 +91,10 @@ static const char *const ITEM_NAMES[ITEM_COUNT] = {
     [ITEM_SLEEP] = "Auto-sleep",
     [ITEM_PHONE] = "Phone setup",
     [ITEM_WIFI] = "Wi-Fi",
+#if CONFIG_MUSE_KBD_ENABLE
+    [ITEM_KEYBOARD] = "Keyboard",
+    [ITEM_FORGET_KEYBOARD] = "Forget hosts",
+#endif
     [ITEM_INFO] = "Status",
     [ITEM_BATTERY] = "Battery",
     [ITEM_RESET] = "Reset pairing",
@@ -103,6 +112,10 @@ static const char *const ITEM_ACTIONS[ITEM_COUNT] = {
     [ITEM_SLEEP] = "Change",
     [ITEM_PHONE] = "Toggle",
     [ITEM_WIFI] = "Toggle",
+#if CONFIG_MUSE_KBD_ENABLE
+    [ITEM_KEYBOARD] = "Toggle",
+    [ITEM_FORGET_KEYBOARD] = "Forget hosts",
+#endif
     [ITEM_INFO] = "Open",
     [ITEM_BATTERY] = "Open",
     [ITEM_RESET] = "Select",
@@ -222,6 +235,11 @@ static void value_text(int item, char *buf, size_t n)
         muse_wifi_status(&w);
         strlcpy(buf, WIFI_VALUES[w.state], n);
         break;
+#if CONFIG_MUSE_KBD_ENABLE
+    case ITEM_KEYBOARD:
+        strlcpy(buf,muse_hid_kbd_enabled()?"On":"Off",n);
+        break;
+#endif
     case ITEM_BATTERY:
         p = muse_state_power();
         if (p.usb || p.battery_pct < 0) {
@@ -411,6 +429,15 @@ static void activate(int item, int direction)
     case ITEM_WIFI:
         muse_settings_set_wifi_on(!muse_settings_wifi_on());
         break;
+#if CONFIG_MUSE_KBD_ENABLE
+    case ITEM_KEYBOARD:
+        if (muse_hid_kbd_set_enabled(!muse_hid_kbd_enabled())!=ESP_OK) muse_state_set_caption("KEYBOARD SETTING NOT SAVED");
+        break;
+    case ITEM_FORGET_KEYBOARD:
+        muse_hid_kbd_forget();
+        muse_state_set_caption("KEYBOARD HOSTS FORGOTTEN");
+        break;
+#endif
     case ITEM_INFO:
         show(VIEW_STATUS);
         return;

@@ -55,6 +55,10 @@ typedef struct {
     const struct ble_gatt_svc_def *svcs;
     void (*configure_host)(void);
     int (*on_gap_event)(struct ble_gap_event *event);
+    /* Optional alternative legacy advertiser, after setup and while no
+     * primary connection exists. True means it owns advertising. */
+    bool (*advertise_override)(bool setup_active);
+    void (*on_shutdown)(void);
 } ble_companion_t;
 
 void ble_server_set_companion(const ble_companion_t *companion);

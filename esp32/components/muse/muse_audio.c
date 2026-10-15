@@ -19,6 +19,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "esp_check.h"
 #include "esp_codec_dev.h"
@@ -31,6 +32,8 @@
 #include "muse_board.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
+#include "muse_input.h"
+#include "muse_latency.h"
 
 static const char *TAG = "muse_audio";
 
@@ -40,6 +43,10 @@ static const char *TAG = "muse_audio";
 static esp_codec_dev_handle_t s_spk;
 static esp_codec_dev_handle_t s_mic;
 static bool s_open;
+static atomic_bool s_playback;
+#if CONFIG_MUSE_BOARD_M5STACK_STICKS3
+static int s_applied_volume = -1;
+#endif
 /* Opening, closing and the volume and gain setters, which other tasks call:
  * with a board-switched codec supply, none may reach a codec mid-switch. */
 static SemaphoreHandle_t s_lock;
@@ -79,8 +86,17 @@ static bool codecs_reachable(void)
 
 static void apply_volume(int volume)
 {
+#if CONFIG_MUSE_BOARD_M5STACK_STICKS3
+    muse_power_t power;
+    /* Read VIN from M5PM1; an I2C failure fails toward the battery cap. */
+    if (muse_board->read_power(&power)!=ESP_OK || !power.usb) volume=volume>75 ? 75 : volume;
+#endif
     if (s_spk && codecs_reachable()) {
+#if CONFIG_MUSE_BOARD_M5STACK_STICKS3
+        if (volume!=s_applied_volume && esp_codec_dev_set_out_vol(s_spk, volume)==ESP_CODEC_DEV_OK) s_applied_volume=volume;
+#else
         esp_codec_dev_set_out_vol(s_spk, volume);
+#endif
     }
 }
 
@@ -98,6 +114,9 @@ static void apply_mic_gain(int db)
 
 static esp_err_t open_codecs(void)
 {
+#if CONFIG_MUSE_BOARD_M5STACK_STICKS3
+    s_applied_volume=-1;
+#endif
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = MUSE_AUDIO_RATE,
         .channel = CHANNELS,
@@ -110,6 +129,7 @@ static esp_err_t open_codecs(void)
         return ESP_FAIL;
     }
     s_open = true;
+    if (muse_board->speaker_enable) muse_board->speaker_enable(false);
     return ESP_OK;
 }
 
@@ -146,6 +166,7 @@ esp_err_t muse_audio_init(int volume, int mic_gain_db)
 
 void muse_audio_power(bool on)
 {
+    if (!on) muse_audio_playback(false);
     lock();
     if (!s_spk || on == s_open) {
         unlock();
@@ -183,6 +204,27 @@ void muse_audio_power(bool on)
     }
     esp_log_level_set("i2s_common", lvl);
     unlock();
+}
+
+void muse_audio_playback(bool on)
+{
+    lock();
+    if (on) apply_volume(muse_settings_volume()); /* battery cap before the amplifier opens */
+    atomic_store(&s_playback,on);
+    if (muse_board->speaker_enable) muse_board->speaker_enable(on && muse_settings_speaker_on());
+    unlock();
+}
+
+void muse_audio_finish_playback(void)
+{
+    if (muse_board->speaker_enable) {
+        /* StickS3 keeps IDF's six 240-frame descriptors (90 ms at 16 kHz).
+         * Feed 100 ms of silence to drain the final speech before gating.
+         * A new press drops s_playback immediately and interrupts this tail. */
+        static const int16_t zero[MUSE_AUDIO_CHUNK];
+        for (int i=0;i<5 && atomic_load(&s_playback);i++) muse_audio_write(zero,MUSE_AUDIO_CHUNK);
+    }
+    muse_audio_playback(false);
 }
 
 void muse_audio_set_volume(int volume)
@@ -281,6 +323,7 @@ void muse_audio_loopback_test(int volume)
         return;
     }
     muse_audio_set_volume(volume);
+    muse_audio_playback(true);
     ESP_LOGI(TAG, "loopback: speaker vol %d, tone -12 dBFS; values = mic L/R tone level dBFS", volume);
 
     for (size_t g = 0; g < sizeof(gains) / sizeof(gains[0]); g++) {
@@ -326,6 +369,7 @@ void muse_audio_loopback_test(int volume)
         ESP_LOGI(TAG, "%s | peak %.1f dBFS", line, 20.0 * log10((peak + 1) / 32768.0));
     }
     free(cap);
+    muse_audio_finish_playback();
     muse_audio_set_mic_gain(muse_settings_mic_gain());
     muse_audio_set_volume(muse_settings_volume());
 }
@@ -337,6 +381,7 @@ esp_err_t muse_audio_read(int16_t *mono, size_t frames)
         if (esp_codec_dev_read(s_mic, s_in_stereo, n * CHANNELS * sizeof(int16_t)) != ESP_CODEC_DEV_OK) {
             return ESP_FAIL;
         }
+        if (muse_input_recording()) muse_latency_mark(muse_latency_turn(),MUSE_LAT_MIC);
         for (size_t i = 0; i < n; i++) {
             float x = muse_board->mic_slot < 0 ? 0.5f * ((float)s_in_stereo[2 * i] + (float)s_in_stereo[2 * i + 1])
                                                : (float)s_in_stereo[2 * i + muse_board->mic_slot];
@@ -355,7 +400,10 @@ esp_err_t muse_audio_write(const int16_t *mono, size_t frames)
 {
     /* Speaker off still plays silence at the same pace, so captions timed to
      * the audio scroll as if it were heard. */
-    bool mute = !muse_settings_speaker_on();
+    bool mute = !muse_settings_speaker_on() || (muse_board->speaker_enable && !atomic_load(&s_playback));
+#if CONFIG_MUSE_BOARD_M5STACK_STICKS3
+    muse_audio_set_volume(muse_settings_volume()); /* also caps a USB-unplug during speech */
+#endif
     while (frames) {
         size_t n = frames > MUSE_AUDIO_CHUNK ? MUSE_AUDIO_CHUNK : frames;
         for (size_t i = 0; i < n; i++) {
@@ -393,6 +441,7 @@ float muse_audio_level(const int16_t *mono, size_t frames)
 
 void muse_audio_chirp(int rising)
 {
+    muse_audio_playback(true);
     enum { MS = 90, N = MUSE_AUDIO_RATE * MS / 1000 };
     static int16_t buf[N];
     float f0 = rising ? 620.0f : 980.0f;
@@ -408,4 +457,5 @@ void muse_audio_chirp(int rising)
         buf[i] = (int16_t)(s * env * 7000.0f);
     }
     muse_audio_write(buf, N);
+    muse_audio_playback(false);
 }

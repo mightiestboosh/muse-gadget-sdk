@@ -84,7 +84,7 @@ void muse_settings_set_ble_on(bool on);
 void muse_settings_set_wifi(const char *ssid, const char *pass);
 void muse_settings_set_hatch_host(const char *host);
 void muse_settings_set_hatch_vm(const char *vm);
-void muse_settings_set_tts_key(const char *key);       /* "" turns speech off */
+esp_err_t muse_settings_set_tts_key(const char *key);  /* requires encrypted NVS */
 void muse_settings_set_tts_voice(const char *voice);   /* "" for the default */
 /* append=true adds to the stored token (for chunked BLE writes). */
 esp_err_t muse_settings_set_hatch_token(const char *token, bool append);

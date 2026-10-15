@@ -87,7 +87,7 @@ unsigned muse_gpio_button_poll(muse_gpio_button_t *b)
         return 0;
     }
     /* Asleep, a press is what woke the input task: it counts on its first sample. */
-    if (++b->stable < DEBOUNCE_SAMPLES && !(raw && muse_state_asleep())) {
+    if (++b->stable < DEBOUNCE_SAMPLES && !(raw && muse_state_asleep() && !b->debounce_wake)) {
         return 0;
     }
     b->stable = 0;

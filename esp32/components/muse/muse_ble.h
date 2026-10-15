@@ -59,6 +59,8 @@ struct ble_gap_event;
 const struct ble_gatt_svc_def *muse_ble_services(void);
 /* Security manager config: display-only passkey pairing with bonding. */
 void muse_ble_configure_host(void);
+bool muse_ble_advertise_override(bool setup_active);
+void muse_ble_shutdown(void);
 /* Sees every GAP event on Link's connection; returns the event's result code. */
 int muse_ble_gap_event(struct ble_gap_event *ev);
 void muse_ble_set_name(const char *name);

@@ -37,6 +37,7 @@
 #include "wifi_mgr.h"
 
 #include "muse_ble.h"
+#include "muse_hid_kbd.h"
 #include "muse_board.h"
 #include "muse_input.h"
 #include "muse_link.h"
@@ -506,7 +507,12 @@ static void keeper_task(void *arg) {
             setup_done = done;
         }
         if (pending & KEEP_BLE) {
-            app_ble_companion_set(muse_settings_ble_on());
+            /* Restart the legacy packet only when its owner changes. The
+             * HID advertiser has its own GAP callback and connection handle. */
+#if CONFIG_MUSE_KBD_ENABLE
+            app_ble_companion_set(false);
+#endif
+            app_ble_companion_set(muse_settings_ble_on() || muse_hid_kbd_enabled());
         }
         if (pending & KEEP_WIFI) {
             backoff = RETRY_MIN_US;
@@ -627,6 +633,8 @@ void muse_glue_start(void) {
         .svcs = muse_ble_services(),
         .configure_host = muse_ble_configure_host,
         .on_gap_event = muse_ble_gap_event,
+        .advertise_override = muse_ble_advertise_override,
+        .on_shutdown = muse_ble_shutdown,
     };
     ble_server_set_companion(&companion);
     // Pinned to the UI core, so the display's SPI interrupt, set up in it,

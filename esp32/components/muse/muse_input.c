@@ -25,6 +25,7 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #if CONFIG_PM_ENABLE
@@ -33,6 +34,16 @@
 #endif
 
 #include "muse_battery.h"
+#include "muse_audio.h"
+#include "muse_hid_kbd.h"
+#include "muse_stt.h"
+#include "muse_tts.h"
+#include "muse_latency.h"
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+#include "muse_ptt.h"
+static muse_ptt_sm_t s_ptt;
+static atomic_bool s_recording, s_tap_mode, s_reset_ptt;
+#endif
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_chat.h"
@@ -88,11 +99,72 @@ static bool s_awake_held;
 #endif
 static volatile bool s_nap_now;   /* ">nap": asleep, as if on battery, nap without waiting WIFI_NAP_MS */
 
-static void post(muse_ptt_t type, bool wake)
+static void enqueue(muse_ptt_t type, bool wake)
 {
     muse_input_event_t ev = { .type = type, .wake = wake };
     ESP_LOGI(TAG, "PTT %s%s", type == MUSE_PTT_DOWN ? "down" : "up", wake ? " (waking)" : "");
-    xQueueSend(s_queue, &ev, 0);
+    if (xQueueSend(s_queue, &ev, pdMS_TO_TICKS(20)) != pdTRUE) ESP_LOGE(TAG,"PTT queue full");
+}
+
+bool muse_input_recording(void)
+{
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+    return atomic_load(&s_recording);
+#else
+    return s_talk_down;
+#endif
+}
+bool muse_input_tap_mode(void)
+{
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+    return atomic_load(&s_tap_mode);
+#else
+    return false;
+#endif
+}
+void muse_input_reset_ptt(void)
+{
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+    atomic_store(&s_reset_ptt,true);
+#endif
+}
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+static void gesture(muse_ptt_edge_t edge, bool wake)
+{
+    unsigned action=muse_ptt_step(&s_ptt,edge,esp_timer_get_time()/1000);
+    atomic_store(&s_recording,muse_ptt_recording(&s_ptt));
+    atomic_store(&s_tap_mode,s_ptt.phase==MUSE_PTT_LATCHED);
+    if (action & MUSE_PTT_ACT_START) {
+        uint32_t previous=muse_latency_turn();
+        if (muse_state_mode(NULL)==MUSE_MODE_SPEAKING) {
+            muse_latency_mark(previous,MUSE_LAT_BARGE);
+            muse_audio_playback(false);  /* amp mute before queue/network work */
+            muse_latency_mark(previous,MUSE_LAT_SILENCE);
+        }
+        muse_latency_begin(muse_hid_kbd_enabled(),muse_state_power().usb);
+        muse_hid_kbd_cancel();
+        muse_stt_cancel();
+        muse_tts_cancel();
+        enqueue(MUSE_PTT_DOWN,wake);
+    }
+    if (action & MUSE_PTT_ACT_SEND) {
+        muse_latency_mark(muse_latency_turn(),MUSE_LAT_RELEASE);
+        if (!muse_hid_kbd_enabled()) muse_tts_prewarm();
+        enqueue(MUSE_PTT_UP,false);
+    }
+    if (action & MUSE_PTT_ACT_CANCEL) {
+        muse_stt_cancel();
+        enqueue(MUSE_PTT_CANCEL,false);
+    }
+}
+#endif
+static void post(muse_ptt_t type, bool wake)
+{
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+    gesture(type==MUSE_PTT_DOWN ? MUSE_PTT_EDGE_DOWN : MUSE_PTT_EDGE_UP,wake);
+#else
+    enqueue(type,wake);
+#endif
 }
 
 static bool update_power(void);
@@ -221,6 +293,14 @@ static void menu_button(bool pressed, bool edge)
 
 static void aux_key(bool pressed, bool edge)
 {
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+    if (pressed && edge && muse_input_recording()) {
+        gesture(MUSE_PTT_EDGE_CANCEL,false);
+        muse_hid_kbd_cancel();
+        return; /* this side press cancels; it does not navigate the menu */
+    }
+#endif
+    if (pressed && edge) muse_hid_kbd_cancel();
     if (muse_board->touch) {
         aux_button(pressed, edge);
     } else {
@@ -524,6 +604,9 @@ static void input_task(void *arg)
     TickType_t powered = xTaskGetTickCount() - pdMS_TO_TICKS(POWER_MS);
 
     for (;;) {
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+        if (atomic_exchange(&s_reset_ptt,false)) gesture(MUSE_PTT_EDGE_CANCEL,false);
+#endif
         unsigned ev = muse_board->poll_buttons() | atomic_exchange(&s_touch_talk_events, 0);
         if (ev & (MUSE_BTN_TALK_PRESS | MUSE_BTN_TALK_RELEASE)) {
             ESP_LOGI(TAG, "talk key:%s%s", ev & MUSE_BTN_TALK_PRESS ? " press" : "",
@@ -555,6 +638,9 @@ static void input_task(void *arg)
         if (!aux_edge) {
             aux_key(aux_down, false);
         }
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+        gesture(MUSE_PTT_TICK,false); /* side cancel wins at the timeout boundary */
+#endif
 
         if (s_power_off_requested) {
             s_power_off_requested = false;
@@ -805,13 +891,19 @@ static void serial_task(void *arg)
             char *line = heap_caps_malloc(SERIAL_LINE, MUSE_BIG_CAPS);
             char none[1];   /* no room: the line is read and dropped */
             bool whole = read_line(line ? line : none, line ? SERIAL_LINE : sizeof(none));
-            if (line && !console_command(line, whole)) {
+            if (line && !strcmp(line,"latency")) {
+                muse_latency_print();
+            } else if (line && !console_command(line, whole)) {
                 muse_ble_command(line);
             }
             free(line);
         } else if (c == 'd' || c == 'u') {
             muse_state_poke();
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+            muse_input_touch_talk(c=='d'); /* the input task alone owns the SM */
+#else
             post(c == 'd' ? MUSE_PTT_DOWN : MUSE_PTT_UP, false);
+#endif
         }
     }
 }
@@ -819,6 +911,9 @@ static void serial_task(void *arg)
 esp_err_t muse_input_start(QueueHandle_t queue)
 {
     s_queue = queue;
+#if CONFIG_MUSE_PTT_DUAL_GESTURE
+    muse_ptt_init(&s_ptt,CONFIG_MUSE_PTT_TAP_MS,CONFIG_MUSE_PTT_MAX_S);
+#endif
     if (xTaskCreate(input_task, "muse_input", 4096, NULL, 6, &s_input) != pdPASS) {
         return ESP_FAIL;
     }

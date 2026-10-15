@@ -110,6 +110,9 @@ typedef struct {
     /* Audio power the board can switch, such as an amp's enable: on once
      * the codecs are open, off before they close to rest. NULL: none. */
     void (*audio_power)(bool on);
+    /* Optional speaker-only gate: capture can keep the ADC running with
+     * the amplifier off. Called before playback and on barge-in. */
+    void (*speaker_enable)(bool on);
     /* The codecs' own supply, where the board switches it: on before they
      * open (the first time too, before audio_init), off once both have
      * closed to rest. Off, nothing reaches them: muse_audio skips the volume
@@ -145,6 +148,7 @@ typedef struct {
     bool active_high;
     bool pressed;
     uint8_t stable;
+    bool debounce_wake; /* also require 20 ms on wake; default keeps fast wake */
 } muse_gpio_button_t;
 
 /* Active low, with the internal pull-up where the pad has one. */

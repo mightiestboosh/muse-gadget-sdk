@@ -67,3 +67,32 @@ class Ptt(unittest.TestCase):
         self.assertEqual(self.step(1, 260), 2)
         self.assertEqual(self.step(0, 270), 1)  # also the barge-in start action
         self.assertEqual(self.step(3, 1270), 2)
+
+    def test_debounce_is_twenty_ms_including_wake(self):
+        source=(ROOT/'components/muse/muse_board.c').read_text()
+        fn=source[source.index('unsigned muse_gpio_button_poll('):source.index('void muse_gpio_buttons_wait(')]
+        code=r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#define DEBOUNCE_SAMPLES 3
+#define MUSE_BTN_TALK_PRESS 1
+#define MUSE_BTN_TALK_RELEASE 2
+typedef struct {bool pressed;uint8_t stable;bool debounce_wake;} muse_gpio_button_t;
+static bool raw,sleeping=true;
+static bool raw_pressed(const muse_gpio_button_t *b){(void)b;return raw;}
+static bool muse_state_asleep(void){return sleeping;}
+"""+fn+r"""
+int main(void){
+ muse_gpio_button_t b={.debounce_wake=true};raw=true;
+ assert(!muse_gpio_button_poll(&b)); /* first sample at 0 ms */
+ assert(!muse_gpio_button_poll(&b)); /* 10 ms */
+ assert(muse_gpio_button_poll(&b)==1); /* 20 ms */
+ raw=false;assert(!muse_gpio_button_poll(&b));assert(!muse_gpio_button_poll(&b));
+ assert(muse_gpio_button_poll(&b)==2);
+ b=(muse_gpio_button_t){0};raw=true;assert(muse_gpio_button_poll(&b)==1); /* other boards */
+}
+"""
+        out=Path(self.tmp.name);(out/'debounce.c').write_text(code)
+        subprocess.run([*shlex.split(os.environ.get('CC','cc')),'-std=c11',str(out/'debounce.c'),'-o',str(out/'debounce')],check=True)
+        subprocess.run([str(out/'debounce')],check=True)

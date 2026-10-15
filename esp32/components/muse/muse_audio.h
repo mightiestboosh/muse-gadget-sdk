@@ -36,6 +36,8 @@ esp_err_t muse_audio_init(int volume, int mic_gain_db);
 /* Off closes the codecs: ADC, DAC, speaker amp and I2S stop. On reopens them
  * with the saved volume and mic gain. Reads and writes need it on. */
 void muse_audio_power(bool on);
+void muse_audio_playback(bool on); /* speaker gate; ADC stays on */
+void muse_audio_finish_playback(void); /* let the final DMA frames leave, then gate */
 
 void muse_audio_set_volume(int volume);          /* 0..100 */
 void muse_audio_set_mic_gain(int db);            /* 0..MUSE_MIC_GAIN_MAX */
