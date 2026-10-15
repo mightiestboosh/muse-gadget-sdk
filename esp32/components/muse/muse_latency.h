@@ -16,6 +16,7 @@ uint32_t muse_latency_begin(bool keyboard, bool usb);
 uint32_t muse_latency_turn(void);
 void muse_latency_at(uint32_t turn, muse_latency_stage_t stage, int64_t at_us);
 void muse_latency_mark(uint32_t turn, muse_latency_stage_t stage);
+bool muse_latency_seen(uint32_t turn, muse_latency_stage_t stage);
 void muse_latency_end(uint32_t turn);
 void muse_latency_print(void);
 #else
@@ -23,6 +24,7 @@ static inline uint32_t muse_latency_begin(bool k, bool u) { (void)k; (void)u; re
 static inline uint32_t muse_latency_turn(void) { return 0; }
 static inline void muse_latency_at(uint32_t t, muse_latency_stage_t s, int64_t a) { (void)t; (void)s; (void)a; }
 static inline void muse_latency_mark(uint32_t t, muse_latency_stage_t s) { (void)t; (void)s; }
+static inline bool muse_latency_seen(uint32_t t, muse_latency_stage_t s) { (void)t; (void)s; return false; }
 static inline void muse_latency_end(uint32_t t) { (void)t; }
 static inline void muse_latency_print(void) {}
 #endif

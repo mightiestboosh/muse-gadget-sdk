@@ -28,8 +28,8 @@ static void print_turn(const turn_t *t)
     int n = snprintf(line, sizeof(line), "LAT turn=%" PRIu32 " mode=%s power=%s", t->id,
                      t->keyboard ? "dictation" : "muse", t->usb ? "usb" : "battery");
     /* Absolute timestamps allow host tools to recompute every stage. */
-    for (int i = 0; i < MUSE_LAT_COUNT; i++) n += snprintf(line+n, sizeof(line)-n, " t%d=%" PRId64, i, t->us[i]);
-    for (unsigned i = 0; i < sizeof(FROM); i++) n += snprintf(line+n, sizeof(line)-n, " %s_ms=%" PRId64, NAMES[i], delta(t,i));
+    for (int i = 0; i < MUSE_LAT_COUNT && n < (int)sizeof(line); i++) n += snprintf(line+n, sizeof(line)-n, " t%d=%" PRId64, i, t->us[i]);
+    for (unsigned i = 0; i < sizeof(FROM) && n < (int)sizeof(line); i++) n += snprintf(line+n, sizeof(line)-n, " %s_ms=%" PRId64, NAMES[i], delta(t,i));
     ESP_LOGI(TAG, "%s", line);
 }
 uint32_t muse_latency_begin(bool k, bool usb)
@@ -60,6 +60,15 @@ void muse_latency_at(uint32_t id, muse_latency_stage_t stage, int64_t us)
     portEXIT_CRITICAL(&s_lock);
 }
 void muse_latency_mark(uint32_t id, muse_latency_stage_t stage) { muse_latency_at(id, stage, esp_timer_get_time()); }
+bool muse_latency_seen(uint32_t id, muse_latency_stage_t stage)
+{
+    if (!id || stage>=MUSE_LAT_COUNT) return false;
+    portENTER_CRITICAL(&s_lock);
+    turn_t *t=&s_turns[id % HISTORY];
+    bool seen=t->id==id && !t->ended && t->us[stage]!=0;
+    portEXIT_CRITICAL(&s_lock);
+    return seen;
+}
 void muse_latency_end(uint32_t id)
 {
     if (!id) return;

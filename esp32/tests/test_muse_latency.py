@@ -25,7 +25,9 @@ int main(void){
  for(int i=1;i<=12;i++){
   uint32_t id=muse_latency_begin(false,i<=6);
   assert(id==(uint32_t)i);
+  assert(!muse_latency_seen(id,MUSE_LAT_MIC));
   muse_latency_at(id,MUSE_LAT_MIC,now+i*1000);
+  assert(muse_latency_seen(id,MUSE_LAT_MIC));
   muse_latency_at(id,MUSE_LAT_MIC,now+999000); /* first stamp wins */
   muse_latency_end(id);muse_latency_end(id);now+=1000000;
  }
