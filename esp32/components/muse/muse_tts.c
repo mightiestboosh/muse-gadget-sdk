@@ -78,6 +78,7 @@ static QueueHandle_t s_q;              /* char * in PSRAM; NULL: no more */
 static atomic_bool s_busy;             /* a task exists */
 static atomic_bool s_waiting;          /* the task is waiting for text */
 static atomic_uint s_job;
+static atomic_uint s_probe_job;         /* console-only API check; discard its audio */
 static atomic_int s_state = MUSE_TTS_IDLE;
 static atomic_size_t s_received;
 /* s_busy transfers exclusive ownership between the warm task and TTS task. */
@@ -97,6 +98,9 @@ static bool cancelled(unsigned job)
 /* Hands `len` bytes to the session, waiting while its buffer is full. */
 static bool push(unsigned job, const uint8_t *p, size_t len)
 {
+    if (atomic_load(&s_probe_job) == job) {
+        return !cancelled(job);
+    }
     while (len) {
         size_t n = xStreamBufferSend(s_sb, p, len, pdMS_TO_TICKS(100));
         p += n;
@@ -432,6 +436,20 @@ esp_err_t muse_tts_finish(void)
     }
     char *end = NULL;
     return xQueueSend(s_q, &end, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+esp_err_t muse_tts_probe(void)
+{
+    esp_err_t err = muse_tts_start();
+    if (err != ESP_OK) return err;
+    /* Set before queueing text: only this job discards bytes, and a front
+     * press cancels it through the normal job-number mechanism. */
+    atomic_store(&s_probe_job, atomic_load(&s_job));
+    static const char text[] = "Hello from your Stick S three.";
+    err = muse_tts_say(text, sizeof(text) - 1);
+    if (err == ESP_OK) err = muse_tts_finish();
+    if (err != ESP_OK) muse_tts_cancel();
+    return err;
 }
 
 muse_tts_state_t muse_tts_state(size_t *received)

@@ -85,6 +85,7 @@ static volatile float s_monitor_db = -100.0f;
 static volatile bool s_chirp;
 static volatile bool s_loopback;
 static volatile bool s_mp3test;
+static volatile bool s_replytest;
 
 /*
  * Pre-roll: while idle the mic keeps running into this ring, so a recording
@@ -910,7 +911,7 @@ static void voice_task(void *arg)
             muse_input_event_t ev;
             bool asleep = muse_state_asleep();
             bool battery = muse_state_on_battery();
-            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback;
+            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback && !s_replytest;
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
@@ -942,6 +943,32 @@ static void voice_task(void *arg)
                 muse_audio_chirp(1);
                 pre_reset();
             }
+#if CONFIG_MUSE_PTT_DUAL_GESTURE && HOLD_NOTES
+            if (s_replytest) {
+                s_replytest = false;
+                int16_t *pcm = NULL;
+                size_t n = muse_hatch_mp3_selftest(&pcm), sent = 0;
+                if (n && muse_hatch_ready()) {
+                    /* Send the embedded spoken fixture through the same
+                     * voice-note/reply path, without recording the room. */
+                    muse_wifi_power(MUSE_WIFI_FULL);
+                    muse_hatch_turn_begin();
+                    muse_tts_prewarm();
+                    feed_t fed = feed_rest(pcm, n, &sent, true);
+                    bool delivered = false;
+                    if (fed == FED) pending_down = hatch_reply(&delivered);
+                    else {
+                        muse_hatch_turn_cancel();
+                        pending_down = fed == FEED_PRESSED;
+                    }
+                    ESP_LOGI(TAG, "reply selftest: %u frames sent, delivered=%d", (unsigned)sent, delivered);
+                } else ESP_LOGW(TAG, "reply selftest: Muse unavailable or no decoded fixture");
+                free(pcm);
+                pre_reset();
+                if (!pending_down) go_idle("");
+                continue;
+            }
+#endif
             if (s_mp3test) {
                 s_mp3test = false;
                 int16_t *pcm = NULL;
@@ -1067,6 +1094,12 @@ void muse_voice_request_loopback(void)
 void muse_voice_request_mp3test(void)
 {
     s_mp3test = true;
+    muse_state_nudge();
+}
+
+void muse_voice_request_replytest(void)
+{
+    s_replytest = true;
     muse_state_nudge();
 }
 

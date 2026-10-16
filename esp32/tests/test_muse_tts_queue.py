@@ -8,6 +8,39 @@ import tempfile
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
 class TtsQueue(unittest.TestCase):
+    def test_probe_discards_only_its_own_job_and_respects_cancellation(self):
+        source=(ROOT/'components/muse/muse_tts.c').read_text()
+        fn=source[source.index('static bool push('):source.index('static char *request_body(')]
+        code=r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdatomic.h>
+#include <stddef.h>
+#include <stdint.h>
+#define pdMS_TO_TICKS(x) (x)
+static atomic_uint s_probe_job;
+static unsigned current=1, writes;
+static int s_sb;
+static bool cancelled(unsigned job) { return job!=current; }
+static size_t xStreamBufferSend(int unused,const uint8_t *p,size_t n,int timeout) {
+    writes++; return n;
+}
+''' + fn + r'''
+int main(void) {
+    uint8_t bytes[4]={0};
+    assert(push(1,bytes,sizeof(bytes))); assert(writes==1);
+    s_probe_job=1;
+    assert(push(1,bytes,sizeof(bytes))); assert(writes==1);
+    current=2;
+    assert(!push(1,bytes,sizeof(bytes))); assert(writes==1);
+    assert(push(2,bytes,sizeof(bytes))); assert(writes==2);
+}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp);(out/'test.c').write_text(code)
+            subprocess.run([*shlex.split(os.environ.get('CC','cc')),'-std=c11',str(out/'test.c'),'-o',str(out/'test')],check=True)
+            subprocess.run([str(out/'test')],check=True)
+
     def test_first_sentence_and_batching_and_cancellation(self):
         source=(ROOT/'components/muse/muse_tts.c').read_text()
         fn=source[source.index('static char *next_text('):source.index('static esp_http_client_handle_t client(')]

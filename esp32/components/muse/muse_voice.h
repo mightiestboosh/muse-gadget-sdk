@@ -44,6 +44,9 @@ void muse_voice_request_loopback(void);
 /* Bench test: decodes and plays a built-in MP3 reply. */
 void muse_voice_request_mp3test(void);
 
+/* StickS3 bench: send embedded spoken fixture to Muse, then play its reply. */
+void muse_voice_request_replytest(void);
+
 /* Asleep with nothing to play: codecs off, Wi-Fi dozing. */
 bool muse_voice_resting(void);
 

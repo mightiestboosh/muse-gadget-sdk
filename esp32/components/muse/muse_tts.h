@@ -78,6 +78,10 @@ void muse_tts_cancel(void);
  * synthesis request and no charge. Returns at once; idle worker owns it. */
 void muse_tts_prewarm(void);
 
+/* Console diagnostic: synthesize a fixed phrase, discard audio, log only
+ * status/byte counts. Uses the saved key and normal cancellable worker. */
+esp_err_t muse_tts_probe(void);
+
 #ifdef __cplusplus
 }
 #endif

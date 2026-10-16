@@ -27,8 +27,10 @@
 #include "host/ble_store.h"
 #include "services/gap/ble_svc_gap.h"
 #include "muse_hid_kbd.h"
+#include "muse_tts.h"
 
 #include "muse_chat.h"
+#include "muse_input.h"
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_state.h"
@@ -176,6 +178,20 @@ static void run_command(char *cmd)
         muse_hatch_test();
     } else if (!strcmp(cmd, "test.loopback")) {
         muse_voice_request_loopback();
+#if CONFIG_MUSE_HATCH
+    } else if (!strcmp(cmd, "test.tts")) {
+        if (muse_state_mode(NULL) != MUSE_MODE_IDLE || muse_input_recording()) {
+            res = "error: wait until idle";
+        } else if (muse_tts_probe() != ESP_OK) {
+            res = "error: speech unavailable or busy";
+        }
+#endif
+#if CONFIG_MUSE_HATCH && CONFIG_MUSE_PTT_DUAL_GESTURE && CONFIG_SPIRAM
+    } else if (!strcmp(cmd, "test.reply")) {
+        if (muse_state_mode(NULL) != MUSE_MODE_IDLE || muse_input_recording()) {
+            res = "error: wait until idle";
+        } else muse_voice_request_replytest();
+#endif
     } else if (!strcmp(cmd, "volume") && parse_int(v, 0, 100, &n)) {
         muse_settings_set_volume(n);
     } else if (!strcmp(cmd, "speaker") && parse_int(v, 0, 1, &n)) {

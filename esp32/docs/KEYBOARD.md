@@ -3,7 +3,8 @@
 This branch adds ElevenLabs reply speech, hold/tap recording, and an opt-in
 US-layout BLE dictation keyboard. **USB bench installation, audio playback,
 encrypted storage and Keyboard setting persistence have been checked on a
-StickS3. Cloud speech, dictation and keyboard host acceptance remain pending.**
+StickS3. A live Muse reply was heard, and a multi-sentence reply decoded and
+played successfully. Dictation and keyboard host acceptance remain pending.**
 
 ## Build and initial setup
 
@@ -226,6 +227,36 @@ measurements are reference data from another board, not StickS3 results.
 Raw PCM TTS and WebSocket text streaming experiments are deferred until the
 HTTP/MP3 path has real hardware measurements.
 
+### Initial speech checks (USB, 2026-10-15)
+
+After locally entering credentials and pairing, one initial reply displayed
+text without audio. Its request log was not captured, so its cause is not
+established. After reboot, a live button turn returned HTTP 200, decoded
+22.05 kHz mono MP3 and played 0.71 seconds of speech; the user confirmed hearing
+it. Its mic-read proxy was 17 ms and first MP3 byte to first PCM submission
+was 6 ms. First reply text to PCM was **1,944 ms**, above the 700 ms target;
+the session waited about 1,716 ms between first text and message completion
+before starting that five-character reply's speech request.
+
+A built-in spoken fixture then exercised the ordinary voice-note/reply path:
+two HTTP 200 speech requests produced 37,704 MP3 bytes and 9.38 seconds of
+decoded reply audio. First text to first PCM submission was 364 ms for that
+reply. The first request's network latency was 248 ms; the next was 255 ms.
+Neither request hit the 12 KB fallback floor (about 29 KB internal heap before
+each request). Direct API probes returned first audio in 711 ms cold and
+218 ms on a reused client. These are individual software observations, **not
+ten-turn medians or acoustic measurements**; the acceptance matrix remains
+pending. The first silent turn has not been reproduced or attributed to a
+specific fix.
+
+For future diagnosis, the serial console accepts `>test.tts` while idle. It
+synthesizes one fixed phrase with the saved key, discards its audio, and logs
+only HTTP status, timings, heap and byte counts. Silence is intentional for
+this API-only probe. `>test.reply` on StickS3 sends the embedded spoken fixture
+to Muse and plays the resulting reply through the usual path. Both use the
+configured accounts; a front press cancels/intercepts work through the normal
+turn mechanism. Remote HTTP error bodies and credentials are never logged.
+
 ## Validation checklist
 
 Verified on macOS, 2026-10-15, with ESP-IDF `v6.0.1` (clean tag,
@@ -238,7 +269,7 @@ Verified on macOS, 2026-10-15, with ESP-IDF `v6.0.1` (clean tag,
 | Final StickS3 source build | Pass; `0x221000` image, 45% app slot free |
 | AIPI full-UI compatibility build | Pass; 48% app slot free |
 | Default `idf.py build` (ESP32-C5) | Pass; 19% app slot free |
-| Full host suite | **612 tests pass, no skips** |
+| Full host suite | **613 tests pass, no skips** |
 | Every StickS3 board-overlay setting applied | Pass |
 | HTTP/WebSocket header-dump strings absent from StickS3 image | Pass |
 | StickS3 USB installation and reboot | Pass; no panic or unexpected reboot in captured runs |
@@ -246,8 +277,9 @@ Verified on macOS, 2026-10-15, with ESP-IDF `v6.0.1` (clean tag,
 | Built-in MP3 playback through onboard speaker | Pass; user confirmed sound and display |
 | HMAC-encrypted NVS first boot and reboot | Pass; slot 0 was empty, provisioned successfully, reused on reboot |
 | Runtime Keyboard toggle survives reboot | Pass; dictation mode observed after restart, restored Off afterward |
-| Muse BLE setup handshake | Reached device confirmation; account/Wi-Fi setup still pending |
-| Cloud speech, dictation, host pairing and battery acceptance | Pending credentials/setup and further hardware tests |
+| Muse pairing and Wi-Fi setup | Pass; paired and online after local credential setup |
+| ElevenLabs speech | Live turn heard; automatic multi-sentence reply decoded/played, HTTP 200 |
+| Dictation, host pairing and battery acceptance | Pending further hardware tests |
 
 Local verification logs are retained in `build-validation-sticks3/`; they
 contain no configured SDK token or ElevenLabs key. The test environment
